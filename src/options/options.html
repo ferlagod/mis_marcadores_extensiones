@@ -1,0 +1,79 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mis Marcadores · Sincronización</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="../icons/icon-96.png" alt="" width="56" height="56">
+      <div>
+        <h1>Mis Marcadores</h1>
+        <p class="sub">Sincroniza los marcadores de este navegador con tu Nextcloud.</p>
+      </div>
+    </header>
+
+    <section id="connected" class="card" hidden>
+      <div class="row">
+        <div>
+          <div class="label">Conectado a</div>
+          <div id="account" class="value"></div>
+        </div>
+        <span id="badge" class="badge">—</span>
+      </div>
+      <p id="statusText" class="status"></p>
+      <p id="errorText" class="error" hidden></p>
+      <div class="actions">
+        <button id="syncBtn" class="primary">Sincronizar ahora</button>
+        <button id="exportBtn">Exportar copia (HTML)</button>
+        <button id="disconnectBtn" class="danger">Desconectar</button>
+      </div>
+    </section>
+
+    <section id="setup" class="card" hidden>
+      <h2>Conectar con Nextcloud</h2>
+      <p class="hint">Usa los mismos datos que en <em>Ajustes → Sincronización</em> de la app.</p>
+      <form id="form" autocomplete="off">
+        <label>Dirección del servidor
+          <input id="server" type="url" placeholder="https://nube.ejemplo.com" required>
+        </label>
+        <label>Usuario
+          <input id="user" type="text" autocapitalize="off" spellcheck="false" required>
+        </label>
+        <label>Contraseña de aplicación
+          <input id="appPass" type="password" required>
+          <small>Nextcloud → Configuración personal → Seguridad → Crear contraseña de aplicación.</small>
+        </label>
+        <div class="notice">
+          <strong>Al conectar</strong> se importan al navegador los marcadores de la app y se exportan a la app los
+          del navegador. Los que están en los dos sitios (misma dirección) no se duplican: si el título o la carpeta
+          no coinciden, se queda la versión más reciente. Borrar un marcador aquí lo envía a la papelera de
+          Mis Marcadores. Si quieres, guarda antes una copia con el botón de abajo.
+        </div>
+        <p id="formError" class="error" hidden></p>
+        <div class="actions">
+          <button id="connectBtn" type="submit" class="primary">Conectar y sincronizar</button>
+          <button id="exportBtn2" type="button">Exportar copia (HTML)</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card small">
+      <h2>Cómo se corresponden las carpetas</h2>
+      <table>
+        <tr><td>Otros marcadores</td><td>Raíz de la app (sin carpeta)</td></tr>
+        <tr><td>Barra de marcadores</td><td>Carpeta «Barra de marcadores»</td></tr>
+        <tr><td>Menú de marcadores (Firefox)</td><td>Carpeta «Menú de marcadores»</td></tr>
+        <tr><td>Marcadores del móvil</td><td>Carpeta «Marcadores del móvil»</td></tr>
+      </table>
+      <p class="hint">Las notas, etiquetas, colores, favoritos y «Leer más tarde» de la app se conservan aunque el navegador no los muestre. Los marcadores en la papelera de la app no aparecen en el navegador.</p>
+    </section>
+  </main>
+  <script src="../lib/api.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

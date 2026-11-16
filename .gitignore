@@ -1,0 +1,5 @@
+dist/
+tests/final/
+tests/index.html
+tests/tmp*
+.DS_Store
