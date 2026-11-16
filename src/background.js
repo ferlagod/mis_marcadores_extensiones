@@ -12,12 +12,11 @@ const ext = globalThis.browser ?? globalThis.chrome;
 const STATUS_KEY = 'mm_status';
 const ALARM = 'mm-periodic';
 const PERIOD_MINUTES = 5;
-const DEBOUNCE_MS = 3000;
 const KEEPALIVE_MS = 20000;
 
 let running = null;
 let pending = false;
-let debounceTimer = null;
+let importing = false;
 
 /*
  * Chrome cierra el service worker si pasan ~30 s sin llamadas a la API de extensiones, aunque
@@ -67,17 +66,12 @@ function syncNow() {
     }
   })().finally(() => {
     running = null;
-    if (pending) {
+    if (pending && !importing) {
       pending = false;
-      scheduleSync();
+      syncNow();
     }
   });
   return running;
-}
-
-function scheduleSync() {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => syncNow(), DEBOUNCE_MS);
 }
 
 /**
@@ -86,15 +80,30 @@ function scheduleSync() {
  * Así no se pierde ningún cambio hecho por el usuario mientras se sincronizaba.
  */
 function onBookmarkEvent() {
-  if (running) pending = true;
-  else scheduleSync();
+  if (importing) {
+    pending = true;
+    return;
+  }
+  syncNow();
 }
 
 ext.bookmarks.onCreated.addListener(onBookmarkEvent);
 ext.bookmarks.onChanged.addListener(onBookmarkEvent);
 ext.bookmarks.onMoved.addListener(onBookmarkEvent);
 ext.bookmarks.onRemoved.addListener(onBookmarkEvent);
-if (ext.bookmarks.onImportEnded) ext.bookmarks.onImportEnded.addListener(onBookmarkEvent);
+if (ext.bookmarks.onChildrenReordered) ext.bookmarks.onChildrenReordered.addListener(onBookmarkEvent);
+if (ext.bookmarks.onImportBegan) {
+  ext.bookmarks.onImportBegan.addListener(() => {
+    importing = true;
+  });
+}
+if (ext.bookmarks.onImportEnded) {
+  ext.bookmarks.onImportEnded.addListener(() => {
+    importing = false;
+    pending = false;
+    syncNow();
+  });
+}
 
 ext.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM) syncNow();
