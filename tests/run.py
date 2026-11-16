@@ -2,10 +2,11 @@ import json, os, pathlib, re, subprocess, sys, tempfile, threading, time
 
 here = pathlib.Path(__file__).resolve().parent
 src = pathlib.Path(sys.argv[1]).resolve()
+script = sys.argv[2] if len(sys.argv) > 2 else 'tests.js'
 libs = ''.join(f'<script src="{(src / "lib" / n).as_uri()}"></script>' for n in ['webdav.js', 'codec.js', 'sync.js'])
 (here / 'index.html').write_text(
     '<!doctype html><meta charset="utf-8"><body>'
-    f'<script src="mocks.js"></script>{libs}<script src="tests.js"></script>')
+    f'<script src="mocks.js"></script>{libs}<script src="{script}"></script>')
 
 chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 profile = tempfile.mkdtemp(dir=here)
@@ -24,6 +25,7 @@ proc.kill()
 
 for l in lines:
     m = re.search(r'"(TEST .*|DONE .*)", source', l)
+    if not m and "FAIL" in l: print("RAW", l[:1500])
     if m:
         print(m.group(1).encode().decode('unicode_escape').encode('latin-1').decode('utf-8', 'replace'))
     m = re.search(r'"DUMP (.*)", source', l)

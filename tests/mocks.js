@@ -92,6 +92,7 @@
   window.DAV = {
     files,
     rootExists: false,
+    latency: 0,
     puts: 0,
     gets: 0,
     put(name, content) { files.set(name, { content, etag: newEtag() }); },
@@ -105,6 +106,7 @@
     '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>';
 
   window.fetch = async (url, opts = {}) => {
+    if (DAV.latency) await new Promise((r) => setTimeout(r, DAV.latency));
     const u = new URL(url);
     const h = opts.headers || {};
     if (h.Authorization !== 'Basic ' + btoa('user:app-pass')) return new Response('', { status: 401 });

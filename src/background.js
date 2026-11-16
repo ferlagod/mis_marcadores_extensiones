@@ -11,14 +11,28 @@ const ext = globalThis.browser ?? globalThis.chrome;
 
 const STATUS_KEY = 'mm_status';
 const ALARM = 'mm-periodic';
-const PERIOD_MINUTES = 10;
-const DEBOUNCE_MS = 4000;
-const QUIET_AFTER_SYNC_MS = 2500;
+const PERIOD_MINUTES = 5;
+const DEBOUNCE_MS = 3000;
+const KEEPALIVE_MS = 20000;
 
 let running = null;
 let pending = false;
 let debounceTimer = null;
-let quietUntil = 0;
+
+/*
+ * Chrome cierra el service worker si pasan ~30 s sin llamadas a la API de extensiones, aunque
+ * haya peticiones de red en curso: una sincronización larga se cortaría a medias. Mientras
+ * sincroniza, una llamada trivial cada 20 s lo mantiene vivo.
+ */
+function keepAlive() {
+  const timer = setInterval(() => ext.runtime.getPlatformInfo().catch(() => {}), KEEPALIVE_MS);
+  return () => clearInterval(timer);
+}
+
+// Si el service worker se cerró en mitad de una sincronización, el estado quedó en «running».
+ext.storage.local.get(STATUS_KEY).then((d) => {
+  if (!running && d[STATUS_KEY] && d[STATUS_KEY].running) setStatus({ running: false });
+});
 
 async function setStatus(patch) {
   const cur = (await ext.storage.local.get(STATUS_KEY))[STATUS_KEY] || {};
@@ -39,6 +53,7 @@ function syncNow() {
     const cfg = await MMSync.loadConfig();
     if (!cfg) return { ok: false, error: 'Sin configurar' };
     await setStatus({ running: true });
+    const release = keepAlive();
     try {
       const stats = await MMSync.synchronize();
       await setStatus({ running: false, lastSync: Date.now(), error: null, stats });
@@ -48,7 +63,7 @@ function syncNow() {
       await setStatus({ running: false, error: friendly(e), errorAt: Date.now() });
       return { ok: false, error: friendly(e) };
     } finally {
-      quietUntil = Date.now() + QUIET_AFTER_SYNC_MS;
+      release();
     }
   })().finally(() => {
     running = null;
@@ -65,11 +80,14 @@ function scheduleSync() {
   debounceTimer = setTimeout(() => syncNow(), DEBOUNCE_MS);
 }
 
-/** Cambios hechos por el usuario en los marcadores del navegador. */
+/**
+ * Cambios en los marcadores del navegador. Los que hace la propia sincronización también llegan
+ * aquí: provocan como mucho una sincronización más, que no encuentra nada y no cambia nada.
+ * Así no se pierde ningún cambio hecho por el usuario mientras se sincronizaba.
+ */
 function onBookmarkEvent() {
-  // Los cambios que hace la propia sincronización no deben disparar otra.
-  if (running || Date.now() < quietUntil) return;
-  scheduleSync();
+  if (running) pending = true;
+  else scheduleSync();
 }
 
 ext.bookmarks.onCreated.addListener(onBookmarkEvent);
@@ -84,7 +102,9 @@ ext.alarms.onAlarm.addListener((alarm) => {
 
 async function ensureAlarm() {
   const existing = await ext.alarms.get(ALARM);
-  if (!existing) ext.alarms.create(ALARM, { periodInMinutes: PERIOD_MINUTES, delayInMinutes: 1 });
+  if (!existing || existing.periodInMinutes !== PERIOD_MINUTES) {
+    ext.alarms.create(ALARM, { periodInMinutes: PERIOD_MINUTES, delayInMinutes: 1 });
+  }
 }
 
 ext.runtime.onStartup.addListener(() => {

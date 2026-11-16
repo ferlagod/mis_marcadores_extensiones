@@ -22,7 +22,7 @@ En la página de ajustes, los mismos datos que en *Ajustes → Sincronización* 
 
 Al conectar se hace la primera sincronización automáticamente: se **importan** al navegador los marcadores de la app, se **exportan** a la app los del navegador y los que están en los dos sitios se emparejan (ver abajo). La página de ajustes muestra el resumen.
 
-Sincroniza al arrancar el navegador, unos segundos después de cada cambio en los marcadores y cada 10 minutos.
+Sincroniza al arrancar el navegador, unos segundos después de cada cambio en los marcadores (también de los hechos mientras sincroniza) y cada 5 minutos. Las subidas y descargas se hacen en paralelo y el progreso se guarda por el camino, así que una primera sincronización grande que se interrumpa continúa donde se quedó.
 
 ## Correspondencia de carpetas
 

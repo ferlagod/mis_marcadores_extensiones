@@ -234,6 +234,21 @@
     const se = remoteGet('bookmark', extraRid).payload;
     check(se.title === 'Seguro editado 2' && se.notes === 'nota del móvil', 'conflicto 412: se refusiona sin perder ningún cambio');
 
+    // --- El usuario edita un marcador mientras la sincronización aplica cambios del servidor
+    appEdit('bookmark', B1, (p) => ({ ...p, title: 'Paella (otra vez la app)', updatedAt: Date.now() }));
+    const origUpdate = chrome.bookmarks.update;
+    chrome.bookmarks.update = async (id, change) => {
+      chrome.bookmarks.update = origUpdate;
+      const r = await origUpdate(id, change);
+      await origUpdate(target.id, { title: 'Editado durante la sincronización' });
+      return r;
+    };
+    await sync();
+    chrome.bookmarks.update = origUpdate;
+    check(remoteGet('bookmark', extraRid).payload.title === 'Editado durante la sincronización', 'cambio hecho durante la sincronización llega al servidor');
+    check(BMNodes.get(target.id).title === 'Editado durante la sincronización', 'y no se revierte en el navegador');
+    check(byUrl('https://paella.example/')[0].title === 'Paella (otra vez la app)', 'el cambio de la app también se aplica');
+
     // --- Reconectar (estado vacío) con todo ya en los dos sitios: no duplica
     const countBefore = findAll().length, filesBefore = DAV.files.size;
     await MMSync.resetState();
@@ -247,7 +262,7 @@
     check(DAV.puts === p0 && window.__events === ev0, 'estado final estable (sin subidas ni cambios en el navegador)');
   } catch (e) {
     failures++;
-    log('FAIL excepción', e && e.stack || e);
+    log('FAIL excepción', String((e && e.stack) || e).replace(/\n/g, ' | '));
   }
 
   // Ficheros finales para comprobar que la app puede leerlos.

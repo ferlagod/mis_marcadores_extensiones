@@ -50,6 +50,8 @@ const MMSync = (() => {
   const CONFIG_KEY = 'mm_config';
   const MAX_ROUNDS = 3;
   const DOWNLOAD_CONCURRENCY = 6;
+  const UPLOAD_CONCURRENCY = 6;
+  const SAVE_EVERY = 25; // subidas entre guardados del estado (por si el navegador corta a medias)
 
   // Freno para retiradas remotas (igual que SyncMerger.isMassRemoval).
   const isMassRemoval = (removed, live) => removed >= 5 && (removed >= 50 || removed * 4 >= live);
@@ -92,12 +94,21 @@ const MMSync = (() => {
 
   const sameField = (f, a, b) => (f === 'url' ? urlKey(a) === urlKey(b) : (a ?? null) === (b ?? null));
 
+  /** Ejecuta fn sobre la lista con n tareas a la vez. Al primer error deja de empezar tareas y lo relanza. */
   async function pool(list, n, fn) {
     let i = 0;
+    let error = null;
     const workers = Array.from({ length: Math.min(n, list.length) }, async () => {
-      while (i < list.length) await fn(list[i++]);
+      while (!error && i < list.length) {
+        try {
+          await fn(list[i++]);
+        } catch (e) {
+          error = error || e;
+        }
+      }
     });
     await Promise.all(workers);
+    if (error) throw error;
   }
 
   function isSyncableUrl(url) {
@@ -554,6 +565,14 @@ const MMSync = (() => {
       const n = snap.nodes.get(bid);
       return n ? n.parentId : null;
     };
+    // Cómo debería quedar cada nodo del navegador según la sincronización. Si al final no
+    // coincide, es que el usuario lo cambió mientras tanto: ese cambio se sube en la próxima.
+    const expected = new Map();
+    for (const [bid, n] of snap.nodes) if (!n.root) expected.set(bid, { title: n.title, url: n.url, parentId: n.parentId });
+    const expect = (bid, patch) => {
+      const e = expected.get(bid);
+      if (e) Object.assign(e, patch);
+    };
     const tryOp = async (label, fn) => {
       try {
         return await fn();
@@ -571,15 +590,23 @@ const MMSync = (() => {
       const created = await tryOp('crear carpeta', () =>
         ext.bookmarks.create({ parentId: bidFor(it.base.parentId), title: it.base.name })
       );
-      if (created) it.bid = created.id;
-      else it.skip = true;
+      if (created) {
+        it.bid = created.id;
+        expected.set(created.id, { title: created.title, url: null, parentId: created.parentId });
+      } else it.skip = true;
     }
     for (const u of updates.filter((u) => u.t === 'folder')) {
-      if ('name' in u.changes) await tryOp('renombrar carpeta', () => ext.bookmarks.update(u.bid, { title: u.changes.name }));
+      if ('name' in u.changes) {
+        const ok = await tryOp('renombrar carpeta', () => ext.bookmarks.update(u.bid, { title: u.changes.name }));
+        if (ok) expect(u.bid, { title: u.changes.name });
+        else expected.delete(u.bid);
+      }
       if ('parentId' in u.changes) {
         const target = bidFor(u.changes.parentId);
         if (target !== u.bid && target !== currentParent(u.bid)) {
-          await tryOp('mover carpeta', () => ext.bookmarks.move(u.bid, { parentId: target }));
+          const ok = await tryOp('mover carpeta', () => ext.bookmarks.move(u.bid, { parentId: target }));
+          if (ok) expect(u.bid, { parentId: target });
+          else expected.delete(u.bid);
         }
       }
     }
@@ -592,6 +619,7 @@ const MMSync = (() => {
       );
       if (created) {
         it.bid = created.id;
+        expected.set(created.id, { title: created.title, url: created.url, parentId: created.parentId });
         stats.imported++;
       } else it.skip = true;
     }
@@ -599,11 +627,18 @@ const MMSync = (() => {
       const change = {};
       if ('title' in u.changes) change.title = u.changes.title;
       if ('url' in u.changes) change.url = u.changes.url;
-      if (Object.keys(change).length) await tryOp('actualizar marcador', () => ext.bookmarks.update(u.bid, change));
+      if (Object.keys(change).length) {
+        const ok = await tryOp('actualizar marcador', () => ext.bookmarks.update(u.bid, change));
+        // El navegador puede normalizar la dirección: se toma lo que devuelve.
+        if (ok) expect(u.bid, { title: ok.title, url: ok.url });
+        else expected.delete(u.bid);
+      }
       if ('folderId' in u.changes) {
         const target = bidFor(u.changes.folderId);
         if (target !== currentParent(u.bid)) {
-          await tryOp('mover marcador', () => ext.bookmarks.move(u.bid, { parentId: target }));
+          const ok = await tryOp('mover marcador', () => ext.bookmarks.move(u.bid, { parentId: target }));
+          if (ok) expect(u.bid, { parentId: target });
+          else expected.delete(u.bid);
         }
       }
     }
@@ -626,7 +661,11 @@ const MMSync = (() => {
       const children = (await tryOp('leer carpeta', () => ext.bookmarks.getChildren(d.bid))) || [];
       const nodeInfo = snap.nodes.get(d.bid);
       const parentBid = nodeInfo ? nodeInfo.parentId : roots.other.id;
-      for (const c of children) await tryOp('mover hijo', () => ext.bookmarks.move(c.id, { parentId: parentBid }));
+      for (const c of children) {
+        const ok = await tryOp('mover hijo', () => ext.bookmarks.move(c.id, { parentId: parentBid }));
+        if (ok) expect(c.id, { parentId: parentBid });
+        else expected.delete(c.id);
+      }
       const ok = await tryOp('quitar carpeta', () => ext.bookmarks.remove(d.bid).then(() => true));
       if (ok) {
         delete items[d.rid];
@@ -634,16 +673,22 @@ const MMSync = (() => {
       }
     }
 
-    // Lo que el navegador tiene ahora es la nueva referencia "seen".
+    // Nueva referencia "seen": lo que la sincronización ha dejado en el navegador. Si el usuario
+    // ha tocado un nodo entretanto, se usa lo esperado para que su cambio cuente como local.
     snap = await snapshot();
     rebuildIndex();
+    const sameNode = (a, b) => a.title === b.title && (a.url || null) === (b.url || null) && a.parentId === b.parentId;
+    let editedDuringSync = false;
     const pendingUpload = new Set(uploads.map((u) => u.rid));
     const dissolved = new Set(folderDissolves.filter((d) => !items[d.rid]).map((d) => d.rid));
     const newSeen = new Map();
     for (const [rid, it] of Object.entries(items)) {
       if (!it.bid || it.rootBound) continue;
-      const node = snap.nodes.get(it.bid);
-      if (!node) continue;
+      const fresh = snap.nodes.get(it.bid);
+      if (!fresh) continue;
+      const exp = expected.get(it.bid);
+      const node = exp && !sameNode(exp, fresh) ? exp : fresh;
+      if (node !== fresh) editedDuringSync = true;
       const seen = localFields(it, node);
       // Lo que estaba en una carpeta borrada ha subido un nivel: se trata como cambio local
       // para que el servidor reciba también la nueva ubicación.
@@ -654,43 +699,51 @@ const MMSync = (() => {
     }
     await saveState(state);
 
+    if (editedDuringSync) ctx.rerun = true;
+
     // 5. Subir -----------------------------------------------------------------------------
-    const order = (u) => (u.tomb ? 2 : u.type === 'folder' ? 0 : 1);
-    uploads.sort((a, b) => order(a) - order(b));
-    try {
-      for (const u of uploads) {
-        const name = MMCodec.fileName(u.type, u.rid);
-        const body = u.tomb
-          ? MMCodec.encodeTombstone(u.type, u.rid, u.deletedAt)
-          : MMCodec.encode(u.type, u.rid, u.payload);
-        let etag;
-        try {
-          etag = await client.put(name, body, { ifMatch: u.ifMatch, ifNoneMatch: u.ifNoneMatch });
-        } catch (e) {
-          if (e.code === 'precondition') {
-            ctx.rerun = true; // cambió en el servidor: otra ronda para fusionar primero
-            continue;
-          }
-          throw e;
+    // Por fases (carpetas, marcadores, lápidas) y varias a la vez dentro de cada fase.
+    const phase = (u) => (u.tomb ? 2 : u.type === 'folder' ? 0 : 1);
+    let sinceSave = 0;
+    const uploadOne = async (u) => {
+      const name = MMCodec.fileName(u.type, u.rid);
+      const body = u.tomb
+        ? MMCodec.encodeTombstone(u.type, u.rid, u.deletedAt)
+        : MMCodec.encode(u.type, u.rid, u.payload);
+      let etag;
+      try {
+        etag = await client.put(name, body, { ifMatch: u.ifMatch, ifNoneMatch: u.ifNoneMatch });
+      } catch (e) {
+        if (e.code === 'precondition') {
+          ctx.rerun = true; // cambió en el servidor: otra ronda para fusionar primero
+          return;
         }
-        stats.uploaded++;
-        const it = items[u.rid];
-        if (legacy.has(u.rid)) stats.legacyRewritten++;
-        if (!u.tomb && u.type === 'bookmark' && !remoteFiles.has(u.rid) && !(it && it.base)) stats.exported++;
-        if (u.tomb) {
-          delete items[u.rid];
-          state.tombs[name] = etag;
-        } else if (it) {
-          it.base = MMCodec[u.type === 'bookmark' ? 'normalizeBookmark' : 'normalizeFolder'](u.payload);
-          it.etag = etag;
-          if (u.gone) {
-            it.bid = null;
-            it.seen = null;
-          } else if (newSeen.has(u.rid)) {
-            it.seen = newSeen.get(u.rid);
-          }
+        throw e;
+      }
+      stats.uploaded++;
+      const it = items[u.rid];
+      if (legacy.has(u.rid)) stats.legacyRewritten++;
+      if (!u.tomb && u.type === 'bookmark' && !remoteFiles.has(u.rid) && !(it && it.base)) stats.exported++;
+      if (u.tomb) {
+        delete items[u.rid];
+        state.tombs[name] = etag;
+      } else if (it) {
+        it.base = MMCodec[u.type === 'bookmark' ? 'normalizeBookmark' : 'normalizeFolder'](u.payload);
+        it.etag = etag;
+        if (u.gone) {
+          it.bid = null;
+          it.seen = null;
+        } else if (newSeen.has(u.rid)) {
+          it.seen = newSeen.get(u.rid);
         }
       }
+      if (++sinceSave >= SAVE_EVERY) {
+        sinceSave = 0;
+        await saveState(state);
+      }
+    };
+    try {
+      for (let p = 0; p <= 2; p++) await pool(uploads.filter((u) => phase(u) === p), UPLOAD_CONCURRENCY, uploadOne);
     } finally {
       await saveState(state);
     }
