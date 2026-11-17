@@ -130,12 +130,26 @@ ext.action.onClicked.addListener(() => ext.runtime.openOptionsPage());
 
 // ------------------------------------------------------------------ mensajes de la página de ajustes
 
+/**
+ * Espera a que no haya ninguna sincronización en curso (ni encadenada). Conectar o desconectar
+ * mientras una sincronización sigue en marcha haría que esta guardase al terminar el estado de
+ * la cuenta anterior encima del nuevo.
+ */
+async function idle() {
+  pending = false;
+  while (running) {
+    await running.catch(() => {});
+    pending = false;
+  }
+}
+
 async function handleMessage(msg) {
   switch (msg && msg.type) {
     case 'connect': {
       const cfg = await MMSync.connect(msg);
-      await ext.storage.local.set({ [MMSync.CONFIG_KEY]: cfg });
+      await idle();
       await MMSync.resetState();
+      await ext.storage.local.set({ [MMSync.CONFIG_KEY]: cfg });
       await setStatus({ error: null, lastSync: null, stats: null, firstSync: null, connectedAt: Date.now() });
       await ensureAlarm();
       // Primera sincronización: importa lo del servidor, exporta lo del navegador y empareja lo común.
@@ -146,6 +160,7 @@ async function handleMessage(msg) {
     case 'sync':
       return syncNow();
     case 'disconnect':
+      await idle();
       await ext.storage.local.remove([MMSync.CONFIG_KEY, MMSync.STATE_KEY, STATUS_KEY]);
       await ext.alarms.clear(ALARM);
       return { ok: true };

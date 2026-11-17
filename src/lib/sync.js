@@ -68,6 +68,10 @@ const MMSync = (() => {
 
   async function loadState() {
     const s = (await ext.storage.local.get(STATE_KEY))[STATE_KEY];
+    if (s && (s.v === 1 || s.v === 2)) {
+      s.items = s.items || {};
+      s.tombs = s.tombs || {};
+    }
     if (s && s.v === 2) return s;
     if (s && s.v === 1) {
       // Estado de la versión cifrada: se olvidan los ETags para volver a descargarlo todo una vez
@@ -218,7 +222,8 @@ const MMSync = (() => {
     for (const [rid, f] of remoteFiles) {
       const it = items[rid];
       if (it && it.t !== f.type) continue;
-      if (it && it.etag && it.etag === f.etag) continue;
+      // (Un fichero cifrado v1 pendiente de reescribir se vuelve a descargar aunque el ETag coincida.)
+      if (it && it.etag && it.etag === f.etag && !it.legacy) continue;
       if (!it && f.etag && state.tombs[f.name] === f.etag) continue;
       toFetch.push([rid, f]);
     }
@@ -230,12 +235,15 @@ const MMSync = (() => {
       try {
         const rec = MMCodec.decode(f.type, raw, rid);
         remote.set(rid, { ...rec, etag: f.etag, name: f.name, type: f.type });
+        if (items[rid]) delete items[rid].legacy;
         stats.downloaded++;
       } catch (e) {
         const it = items[rid];
         if (e instanceof MMLegacyFileError && it && it.t === f.type && it.base) {
-          // Se conoce el contenido: se sube en claro encima del fichero cifrado.
+          // Se conoce el contenido: se sube en claro encima del fichero cifrado. La marca «legacy»
+          // se guarda en el estado hasta que la subida funcione, para reintentarlo si falla.
           it.etag = f.etag;
+          it.legacy = true;
           legacy.add(rid);
           return;
         }
@@ -537,7 +545,8 @@ const MMSync = (() => {
     if (permanent.length && isMassRemoval(permanent.length, visible)) {
       for (const r of permanent) {
         const it = items[r.rid];
-        const payload = { ...(it.base || {}), isTrashed: false };
+        // updatedAt nuevo: debe ganar a la lápida (deletedAt) también en la app.
+        const payload = { ...(it.base || {}), isTrashed: false, updatedAt: now };
         if (it.base) queueUpload(r.rid, 'bookmark', payload, r.rec);
       }
       stats.protectedRemote += permanent.length;
@@ -730,6 +739,7 @@ const MMSync = (() => {
       } else if (it) {
         it.base = MMCodec[u.type === 'bookmark' ? 'normalizeBookmark' : 'normalizeFolder'](u.payload);
         it.etag = etag;
+        delete it.legacy;
         if (u.gone) {
           it.bid = null;
           it.seen = null;

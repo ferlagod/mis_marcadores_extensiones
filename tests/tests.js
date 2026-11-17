@@ -114,6 +114,21 @@
     check(s.legacyRewritten === 1 && p1.title === 'Paella valenciana' && p1.notes === 'nota secreta', 'fichero cifrado conocido reescrito en claro');
     check(BMNodes.has(paella.id), 'y el marcador sigue en el navegador');
 
+    // --- Si la reescritura en claro falla (red), se reintenta en la siguiente sincronización
+    DAV.put(`bookmark_${B1}.json`, v1Encrypted('bookmark', B1));
+    const fetchOk = window.fetch;
+    window.fetch = async (url, opts = {}) => {
+      if (opts.method === 'PUT' && String(url).includes(B1)) throw new TypeError('Failed to fetch');
+      return fetchOk(url, opts);
+    };
+    let netErr = null;
+    try { await sync(); } catch (e) { netErr = e; }
+    window.fetch = fetchOk;
+    check(netErr && netErr.code === 'network', 'fallo de red al reescribir el fichero cifrado');
+    s = await sync();
+    p1 = remoteGet('bookmark', B1).payload;
+    check(s.legacyRewritten === 1 && p1.title === 'Paella valenciana', 'el fichero cifrado se reescribe al reintentar');
+
     // --- Cambio en la app llega al navegador
     appEdit('bookmark', B2, (p) => ({ ...p, title: 'Raíz editada en el móvil', updatedAt: Date.now() }));
     await sync();
@@ -205,10 +220,12 @@
     for (let i = 0; i < 25; i++) many.push(await BM.create({ parentId: '2', title: 'M' + i, url: `https://m${i}.example/` }));
     await sync();
     const manyRids = remoteBookmarks().filter((b) => b.kind === 'live' && /m\d+\.example/.test(b.payload.url)).map((b) => b.id);
+    const tombAt = Date.now();
     for (const id of manyRids.slice(0, 10)) appTomb('bookmark', id);
     s = await sync();
     check(s.protectedRemote === 10 && findAll().filter((n) => /m\d+\.example/.test(n.url)).length === 25, 'freno: 10 borrados remotos en bloque no se aplican');
     check(remoteGet('bookmark', manyRids[0]).kind === 'live', 'y se vuelven a subir');
+    check(remoteGet('bookmark', manyRids[0]).payload.updatedAt >= tombAt, 'con updatedAt posterior a la lápida');
 
     // --- Freno de borrados masivos en el navegador
     for (const n of many) await BM.remove(n.id);
